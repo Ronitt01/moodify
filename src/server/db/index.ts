@@ -14,7 +14,11 @@ import { SCHEMA_SQL } from "./schema";
  * reloads don't spin up a new database every change.
  */
 
-const DATA_DIR = process.env.PGLITE_DATA_DIR || "./.pglite";
+// Local dev persists to disk. On Vercel the only writable path is /tmp, which
+// is ephemeral — the DB transparently re-seeds on cold start (fine for the demo).
+// For persistent production, set PGLITE_DATA_DIR or point the DB at Supabase.
+const DATA_DIR =
+  process.env.PGLITE_DATA_DIR || (process.env.VERCEL ? "/tmp/moodify-pglite" : "./.pglite");
 
 declare global {
   // eslint-disable-next-line no-var
