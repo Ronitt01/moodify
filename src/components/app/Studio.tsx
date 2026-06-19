@@ -8,6 +8,7 @@ import { Equalizer } from "@/components/ui/Equalizer";
 import { Bracket } from "@/components/ui/Tag";
 import { Logo } from "@/components/ui/Logo";
 import { PlayIcon, SpotifyIcon, ArrowIcon, CheckIcon } from "@/components/ui/icons";
+import { ImportModal } from "./ImportModal";
 
 type Me = {
   user: { id: string; display_name?: string | null; is_anonymous?: boolean };
@@ -99,6 +100,7 @@ export function Studio() {
   const [result, setResult] = useState<MomentResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/me")
@@ -146,6 +148,12 @@ export function Studio() {
             <Logo />
           </a>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setImportOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-line-strong bg-ink-600 px-3 py-2 font-mono text-[0.62rem] uppercase tracking-[0.1em] text-paper-dim transition-colors hover:border-brand hover:text-paper"
+            >
+              + Import
+            </button>
             {me?.connected ? (
               <span className="inline-flex items-center gap-2 rounded-lg border border-line-brand bg-brand/10 px-3 py-2 font-mono text-[0.62rem] uppercase tracking-[0.1em] text-brand-lighter">
                 <SpotifyIcon className="size-3.5" />
@@ -347,6 +355,15 @@ export function Studio() {
           </TerminalWindow>
         </div>
       </main>
+
+      <ImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(r) => {
+          setMe((m) => (m ? { ...m, universe: r.universe } : m));
+          setResult(null);
+        }}
+      />
     </div>
   );
 }

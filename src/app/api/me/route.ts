@@ -3,7 +3,7 @@ import { getOrCreateUserId } from "@/server/session";
 import { ensureStarterUniverse } from "@/server/seed";
 import { isConnected, isConfigured } from "@/server/spotify";
 import { getEmotionProvider } from "@/server/emotion/provider";
-import { one } from "@/server/db";
+import { one, dbMode } from "@/server/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,5 +23,6 @@ export async function GET() {
     spotifyConfigured: isConfigured(),
     universe,
     engine: getEmotionProvider().name,
+    db: dbMode(),
   });
 }
