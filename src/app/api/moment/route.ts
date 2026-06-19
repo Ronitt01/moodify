@@ -53,15 +53,19 @@ export async function POST(req: Request) {
       JSON.stringify(reading.context),
     ]
   );
-  if (moment) {
-    for (let i = 0; i < queue.length; i++) {
-      const q = queue[i];
-      await query(
-        `insert into queue_items (moment_id, user_id, track_id, rank, score, why)
-           values ($1, $2, $3, $4, $5, $6::jsonb)`,
-        [moment.id, userId, q.id, i + 1, q.score, JSON.stringify(q.why)]
-      );
-    }
+  if (moment && queue.length) {
+    // One multi-row insert, not one round-trip per item — matters on a remote DB.
+    const params: unknown[] = [];
+    const tuples = queue.map((q, i) => {
+      const b = params.length;
+      params.push(moment.id, userId, q.id, i + 1, q.score, JSON.stringify(q.why));
+      return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}::jsonb)`;
+    });
+    await query(
+      `insert into queue_items (moment_id, user_id, track_id, rank, score, why)
+         values ${tuples.join(",")}`,
+      params
+    );
   }
 
   return NextResponse.json({

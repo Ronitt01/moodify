@@ -36,6 +36,8 @@ export interface DBClient {
 declare global {
   // eslint-disable-next-line no-var
   var __moodifyDB: Promise<DBClient> | undefined;
+  // eslint-disable-next-line no-var
+  var __moodifyDBMode: "pglite" | "supabase" | undefined;
 }
 
 async function initPglite(): Promise<DBClient> {
@@ -53,19 +55,72 @@ async function initPglite(): Promise<DBClient> {
   };
 }
 
+/**
+ * Tolerant connection-string parser. Splits manually (not via `new URL`) so a
+ * password containing special characters like / # ? % & still works WITHOUT the
+ * user having to percent-encode it. Assumes a single '@' (i.e. no '@' in the
+ * password, which postgres.js / new URL also can't handle unencoded).
+ */
+function parsePgUrl(raw: string) {
+  const afterScheme = raw.includes("://") ? raw.slice(raw.indexOf("://") + 3) : raw;
+  const at = afterScheme.lastIndexOf("@");
+  const auth = at >= 0 ? afterScheme.slice(0, at) : "";
+  const rest = at >= 0 ? afterScheme.slice(at + 1) : afterScheme;
+  const ci = auth.indexOf(":");
+  const user = (ci >= 0 ? auth.slice(0, ci) : auth) || "postgres";
+  const password = ci >= 0 ? auth.slice(ci + 1) : "";
+  const slash = rest.indexOf("/");
+  const hostport = slash >= 0 ? rest.slice(0, slash) : rest;
+  const database =
+    (slash >= 0 ? rest.slice(slash + 1) : "postgres").split(/[?#]/)[0] || "postgres";
+  const colon = hostport.lastIndexOf(":");
+  const host = colon >= 0 ? hostport.slice(0, colon) : hostport;
+  const port = colon >= 0 ? parseInt(hostport.slice(colon + 1), 10) || 5432 : 5432;
+  return { host, port, user, password, database };
+}
+
 async function initPg(url: string): Promise<DBClient> {
   const postgres = (await import("postgres")).default;
   const isLocal = url.includes("localhost") || url.includes("127.0.0.1");
-  const sql = postgres(url, {
+  const { host, port, user, password, database } = parsePgUrl(url);
+  const sql = postgres({
+    host,
+    port,
+    user,
+    password,
+    database,
     max: 1, // serverless-friendly
     prepare: false, // required for Supabase's transaction pooler (pgbouncer)
-    ssl: isLocal ? undefined : "require",
+    ssl: isLocal ? undefined : { rejectUnauthorized: false },
     idle_timeout: 20,
     connect_timeout: 12,
   });
-  // Verify the connection now so a bad URL / password / host surfaces here,
-  // letting getDB() fall back to local PGlite instead of breaking every request.
-  await sql.unsafe("select 1");
+  try {
+    // Verify the connection now so a bad URL / password / host surfaces here,
+    // letting getDB() fall back to local PGlite instead of breaking every
+    // request. A remote pooler can hiccup on the first cold hit, so retry.
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await sql.unsafe("select 1");
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+    }
+    if (lastErr) throw lastErr;
+  } catch (e) {
+    // Close the orphaned connection so postgres.js doesn't keep reconnecting and
+    // throwing unhandled rejections in the background after we fall back.
+    try {
+      await sql.end({ timeout: 0 });
+    } catch {
+      /* ignore */
+    }
+    throw e;
+  }
   // Schema is applied out-of-band (Supabase SQL editor) — we never run DDL
   // through the pooler. Seed data loads on first request via the seed loader.
   return {
@@ -77,11 +132,13 @@ async function initPg(url: string): Promise<DBClient> {
   };
 }
 
-let activeMode: "pglite" | "supabase" = "pglite";
-
-/** Which backend is actually serving (accurate once getDB has resolved once). */
+/**
+ * Which backend is actually serving. Stored on globalThis (not module scope) so
+ * it stays correct across Next.js hot reloads — those re-evaluate this module
+ * (resetting module-level state) but keep the cached client on globalThis.
+ */
 export function dbMode(): "pglite" | "supabase" {
-  return activeMode;
+  return globalThis.__moodifyDBMode ?? "pglite";
 }
 
 async function init(): Promise<DBClient> {
@@ -89,7 +146,7 @@ async function init(): Promise<DBClient> {
   if (url) {
     try {
       const client = await initPg(url);
-      activeMode = "supabase";
+      globalThis.__moodifyDBMode = "supabase";
       return client;
     } catch (e) {
       // A malformed URL, wrong password, or unreachable host shouldn't break the
@@ -100,7 +157,7 @@ async function init(): Promise<DBClient> {
       );
     }
   }
-  activeMode = "pglite";
+  globalThis.__moodifyDBMode = "pglite";
   return initPglite();
 }
 

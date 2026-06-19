@@ -17,26 +17,63 @@ declare global {
   var __moodifyCatalog: Promise<void> | undefined;
 }
 
+/**
+ * Seed in 3 round-trips, not ~230. A per-row loop is fine on in-process PGlite
+ * but pathological against a remote Postgres (every insert is a network hop —
+ * 115 tracks × 2 ≈ 45s on a cross-region link). So we bulk-insert tracks, read
+ * their ids back in one query, then bulk-insert emotions. Still fully idempotent.
+ */
 async function seedCatalog(): Promise<void> {
-  for (const [title, artist, genresCsv, year] of SEED_CATALOG) {
-    const genres = genresCsv.split(",").map((g) => g.trim()).filter(Boolean);
-    const externalId = slug(`${title}-${artist}`);
+  const rows = SEED_CATALOG.map(([title, artist, genresCsv, year]) => ({
+    externalId: slug(`${title}-${artist}`),
+    title,
+    artist,
+    genres: genresCsv.split(",").map((g) => g.trim()).filter(Boolean),
+    year,
+  }));
 
-    const row = await one<{ id: string }>(
-      `insert into tracks (source, external_id, title, artist, genres, year)
-         values ('seed', $1, $2, $3, $4::text[], $5)
-       on conflict (source, external_id) do update set title = excluded.title
-       returning id`,
-      [externalId, title, artist, toTextArray(genres), year]
-    );
-    if (!row) continue;
+  // 1) Bulk upsert tracks (one statement, one round-trip).
+  const tParams: unknown[] = [];
+  const tTuples = rows.map((r) => {
+    const b = tParams.length;
+    tParams.push(r.externalId, r.title, r.artist, toTextArray(r.genres), r.year);
+    return `('seed', $${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}::text[], $${b + 5})`;
+  });
+  await query(
+    `insert into tracks (source, external_id, title, artist, genres, year)
+       values ${tTuples.join(",")}
+     on conflict (source, external_id) do update set title = excluded.title`,
+    tParams
+  );
 
-    const { emotion, tags, model } = tagTrack({ title, artist, genres, year });
+  // 2) Read back the ids in one query and map by external_id.
+  const idRows = await query<{ id: string; external_id: string }>(
+    `select id, external_id from tracks where source = 'seed'`
+  );
+  const idByExt = new Map(idRows.map((r) => [r.external_id, r.id]));
+
+  // 3) Bulk upsert emotions (one statement, one round-trip).
+  const eParams: unknown[] = [];
+  const eTuples: string[] = [];
+  for (const r of rows) {
+    const id = idByExt.get(r.externalId);
+    if (!id) continue;
+    const { emotion, tags, model } = tagTrack({
+      title: r.title,
+      artist: r.artist,
+      genres: r.genres,
+      year: r.year,
+    });
+    const b = eParams.length;
+    eParams.push(id, toVec(emotion), JSON.stringify(tags), model);
+    eTuples.push(`($${b + 1}, $${b + 2}::vector, $${b + 3}::jsonb, $${b + 4})`);
+  }
+  if (eTuples.length) {
     await query(
       `insert into track_emotions (track_id, emotion, tags, model)
-         values ($1, $2::vector, $3::jsonb, $4)
+         values ${eTuples.join(",")}
        on conflict (track_id) do nothing`,
-      [row.id, toVec(emotion), JSON.stringify(tags), model]
+      eParams
     );
   }
 }
