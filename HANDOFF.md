@@ -2,6 +2,19 @@
 
 > Living doc. **Status as of 2026-06-20:** Landing page ✅ shipped. Backend **moment → queue MVP** ✅ built **and verified end-to-end**. **Supabase (Postgres + pgvector) is now LIVE** — the app auto-connects via the transaction pooler and persists moments/queues there (verified by direct row counts). Keyless **library import** (paste / Exportify CSV) ✅. Spotify OAuth coded (free accounts are Web-API-blocked by Spotify → use import instead). `/app` studio live.
 
+> ⏭ **PICK UP TOMORROW (2026-06-21) — Vercel production isn't serving suggestions.**
+> **Local dev is fully working** (`/api/me` → `db: supabase`; moments return queues). The **Vercel deploy renders but `/api/moment` returns no songs** — almost certainly missing env vars (code is pushed; secrets are gitignored, so they don't deploy).
+>
+> **Fix — Vercel dashboard → Settings → Environment Variables → Production:**
+> - `DATABASE_URL` = the **transaction-pooler** string from `.env.local` (`postgres.<ref>@aws-1-ap-southeast-2.pooler.supabase.com:6543`). This is the one that matters for suggestions.
+> - `SESSION_SECRET` = any long random string · `APP_URL` = `https://<app>.vercel.app`.
+> - Optional: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `SPOTIFY_*`. **Do NOT set `PGLITE_DATA_DIR`** (it's a local path and breaks the serverless fallback).
+> - **Redeploy after saving** (Deployments → ⋯ → Redeploy) — Vercel bakes env vars in at build time, so existing deploys won't see them.
+>
+> **First diagnostic:** open `https://<app>.vercel.app/api/me`.
+> - `db: supabase` → env is set; look elsewhere (e.g. Hobby plan's 10s function timeout vs Sydney latency — `vercel.json` already pins `syd1` to mitigate).
+> - `db: pglite` or a 500 → `DATABASE_URL` missing or not redeployed → set it + redeploy.
+
 ---
 
 ## # Changed
