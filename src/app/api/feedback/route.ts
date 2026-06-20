@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 const Body = z.object({
   trackId: z.string().uuid().nullable().optional(),
   momentId: z.string().uuid().nullable().optional(),
-  kind: z.enum(["fit", "skip", "replay", "too_intense", "nostalgic"]),
+  kind: z.enum(["fit", "skip", "replay", "too_intense", "nostalgic", "play"]),
 });
 
 export async function POST(req: Request) {

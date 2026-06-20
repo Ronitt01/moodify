@@ -100,6 +100,7 @@ export async function rankCandidates(
     const tasteFit = taste.profile ? affinity(taste.profile, emo) : 0.5;
     let s = base * (1 - tasteW) + tasteFit * tasteW + contextBoost(emo, reading);
     if (fb.loved.has(r.id)) s += 0.06; // you've loved this one before
+    else if (fb.played.has(r.id)) s += 0.03; // you played it — lean in a little
     if (fb.skipped.has(r.id)) s -= 0.5; // you skipped it — push it down
     const score = Math.max(0, Math.min(1, s));
 
@@ -109,6 +110,7 @@ export async function rankCandidates(
       .slice(0, 2)
       .map((x) => WHY_PHRASE[x.d] as string);
     if (fb.loved.has(r.id)) why.unshift("you loved this");
+    else if (fb.played.has(r.id)) why.unshift("you played this");
     else if (tasteW > 0 && tasteFit > 0.62) why.push("fits your taste");
 
     return {

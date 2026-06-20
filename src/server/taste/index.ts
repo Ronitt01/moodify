@@ -15,7 +15,10 @@ import { clampVec, lerp, EMOTION_DIMS, type DimName } from "@/server/emotion/spa
  */
 
 // Reaction kind → learning sign + strength.
-const POSITIVE: Record<string, number> = { fit: 1, replay: 1.2, nostalgic: 0.6 };
+// `play` is an *implicit* signal — actually choosing to play a track teaches the
+// graph too, just more softly than an explicit ♥ (you played it, you didn't
+// necessarily love it). This is how Moodify learns from behaviour, not just taps.
+const POSITIVE: Record<string, number> = { fit: 1, replay: 1.2, nostalgic: 0.6, play: 0.5 };
 const NEGATIVE: Record<string, number> = { skip: 1, too_intense: 0.8 };
 
 export const isPositive = (kind: string) => kind in POSITIVE;
@@ -52,7 +55,7 @@ export async function getTaste(userId: string): Promise<TasteProfile> {
 /** Latest reaction per track → the sets the engine uses to boost / demote. */
 export async function getFeedbackSets(
   userId: string
-): Promise<{ loved: Set<string>; skipped: Set<string> }> {
+): Promise<{ loved: Set<string>; skipped: Set<string>; played: Set<string> }> {
   const rows = await query<{ track_id: string; kind: string }>(
     `select distinct on (track_id) track_id, kind
        from feedback
@@ -62,11 +65,13 @@ export async function getFeedbackSets(
   );
   const loved = new Set<string>();
   const skipped = new Set<string>();
+  const played = new Set<string>();
   for (const r of rows) {
-    if (isPositive(r.kind)) loved.add(r.track_id);
+    if (r.kind === "play") played.add(r.track_id); // implicit: you chose to play it
+    else if (isPositive(r.kind)) loved.add(r.track_id); // explicit ♥
     else if (isNegative(r.kind)) skipped.add(r.track_id);
   }
-  return { loved, skipped };
+  return { loved, skipped, played };
 }
 
 /** Record one reaction and EMA-update the user's taste profile. Returns the new profile. */

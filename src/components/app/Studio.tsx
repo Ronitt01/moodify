@@ -120,6 +120,7 @@ export function Studio() {
   const [banner, setBanner] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [reacted, setReacted] = useState<Record<string, "fit" | "skip">>({});
+  const [played, setPlayed] = useState<Record<string, boolean>>({});
   const [taste, setTaste] = useState<{ interactions: number; lean: string[] }>({
     interactions: 0,
     lean: [],
@@ -189,6 +190,26 @@ export function Studio() {
     } catch {
       /* keep the optimistic UI even if the network blips */
     }
+  }
+
+  // Implicit learning: actually playing a track is a real behavioural signal.
+  // Fire-and-forget so it never blocks the Spotify tab from opening; learn once
+  // per track so an accidental double-click doesn't over-weight it.
+  function playTrack(trackId: string) {
+    if (played[trackId]) return;
+    setPlayed((m) => ({ ...m, [trackId]: true }));
+    fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId, momentId: result?.momentId ?? null, kind: "play" }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        if (res?.lean) setTaste({ interactions: res.interactions, lean: res.lean });
+      })
+      .catch(() => {
+        /* navigation already happened; the signal is best-effort */
+      });
   }
 
   function toggleLang(id: string) {
@@ -463,6 +484,7 @@ export function Studio() {
                         }
                         target="_blank"
                         rel="noopener noreferrer"
+                        onClick={() => playTrack(q.id)}
                         title={`Play "${q.title}" by ${q.artist} on Spotify`}
                         layout
                         initial={{ opacity: 0, x: 16 }}
@@ -473,8 +495,17 @@ export function Studio() {
                           reacted[q.id] === "skip" ? "opacity-40" : ""
                         }`}
                       >
-                        <span className="w-5 shrink-0 text-center font-mono text-[0.62rem] text-paper-faint">
-                          {i === 0 ? <PlayIcon className="mx-auto size-3.5 text-brand-light" /> : i + 1}
+                        <span
+                          className="w-5 shrink-0 text-center font-mono text-[0.62rem] text-paper-faint"
+                          title={played[q.id] ? "you've played this — Moodify is learning from it" : undefined}
+                        >
+                          {played[q.id] ? (
+                            <CheckIcon className="mx-auto size-3.5 text-brand-light" />
+                          ) : i === 0 ? (
+                            <PlayIcon className="mx-auto size-3.5 text-brand-light" />
+                          ) : (
+                            i + 1
+                          )}
                         </span>
                         <MoodArt from={from} to={to} className="size-11 shrink-0" rounded="rounded-md" />
                         <div className="min-w-0 flex-1">
@@ -532,7 +563,7 @@ export function Studio() {
                   })}
                 </AnimatePresence>
                 <p className="mt-2 inline-flex items-center gap-1.5 font-mono text-[0.55rem] uppercase tracking-[0.08em] text-paper-faint">
-                  <CheckIcon className="size-3" /> tap to play on spotify · react to teach your taste ·
+                  <CheckIcon className="size-3" /> tap to play — it learns as you play · react to fine-tune ·
                   {result.discover
                     ? " sourced across all of music"
                     : result.connected
