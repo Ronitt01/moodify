@@ -2,6 +2,7 @@ import "server-only";
 import { query, parseVec, parseTextArray, toVec } from "@/server/db";
 import { affinity, named, EMOTION_DIMS, type DimName } from "@/server/emotion/space";
 import type { MomentReading } from "@/server/emotion/moment";
+import { getTaste, getFeedbackSets } from "@/server/taste";
 
 /**
  * The recommendation engine.
@@ -77,31 +78,46 @@ export async function recommend(
 ): Promise<QueueTrack[]> {
   const target = toVec(reading.target);
 
-  // Stage 1 — pgvector candidate retrieval.
-  const rows = await query<CandidateRow>(
-    `select t.id, t.title, t.artist, t.genres, t.year, t.source,
-            te.emotion::text as emotion
-       from master_playlist_tracks m
-       join tracks t          on t.id = m.track_id
-       join track_emotions te on te.track_id = t.id
-      where m.user_id = $1
-      order by te.emotion <=> $2::vector
-      limit 80`,
-    [userId, target]
-  );
+  // Stage 1 — pgvector candidate retrieval, plus the user's learned taste
+  // profile and reaction history (all concurrent — ~one round-trip).
+  const [rows, taste, fb] = await Promise.all([
+    query<CandidateRow>(
+      `select t.id, t.title, t.artist, t.genres, t.year, t.source,
+              te.emotion::text as emotion
+         from master_playlist_tracks m
+         join tracks t          on t.id = m.track_id
+         join track_emotions te on te.track_id = t.id
+        where m.user_id = $1
+        order by te.emotion <=> $2::vector
+        limit 80`,
+      [userId, target]
+    ),
+    getTaste(userId),
+    getFeedbackSets(userId),
+  ]);
+
+  // Taste influence ramps up with how much we've learned (capped), so a brand
+  // new user is driven purely by the moment, not a thin, noisy profile.
+  const tasteW = taste.profile ? Math.min(0.22, 0.05 + taste.interactions * 0.015) : 0;
 
   // Stage 2 — rich re-rank.
   type Scored = QueueTrack & { _artist: string };
   const scored: Scored[] = rows.map((r) => {
     const emo = parseVec(r.emotion);
     const base = affinity(reading.target, emo); // 0..1, direction-aware
-    const score = Math.max(0, Math.min(1, base + contextBoost(emo, reading)));
+    const tasteFit = taste.profile ? affinity(taste.profile, emo) : 0.5;
+    let s = base * (1 - tasteW) + tasteFit * tasteW + contextBoost(emo, reading);
+    if (fb.loved.has(r.id)) s += 0.06; // you've loved this one before
+    if (fb.skipped.has(r.id)) s -= 0.5; // you skipped it — push it down
+    const score = Math.max(0, Math.min(1, s));
 
     const why = EMOTION_DIMS.map((d, i) => ({ d, both: Math.min(reading.target[i], emo[i]) }))
       .filter((x) => x.both > 0.45 && WHY_PHRASE[x.d])
       .sort((a, b) => b.both - a.both)
       .slice(0, 2)
       .map((x) => WHY_PHRASE[x.d] as string);
+    if (fb.loved.has(r.id)) why.unshift("you loved this");
+    else if (tasteW > 0 && tasteFit > 0.62) why.push("fits your taste");
 
     return {
       id: r.id,

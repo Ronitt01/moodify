@@ -96,6 +96,23 @@ export function CheckIcon(p: IconProps) {
   );
 }
 
+export function HeartIcon(p: IconProps & { filled?: boolean }) {
+  const { filled, ...rest } = p;
+  return (
+    <svg {...base} fill={filled ? "currentColor" : "none"} {...rest}>
+      <path d="M12 20s-6.5-4.1-6.5-9A3.8 3.8 0 0 1 12 7.6 3.8 3.8 0 0 1 18.5 11c0 4.9-6.5 9-6.5 9Z" />
+    </svg>
+  );
+}
+
+export function CloseIcon(p: IconProps) {
+  return (
+    <svg {...base} {...p}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
 export function PlusMinus(p: IconProps & { open?: boolean }) {
   const { open, ...rest } = p;
   return (

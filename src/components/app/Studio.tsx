@@ -7,7 +7,7 @@ import { MoodArt } from "@/components/ui/MoodArt";
 import { Equalizer } from "@/components/ui/Equalizer";
 import { Bracket } from "@/components/ui/Tag";
 import { Logo } from "@/components/ui/Logo";
-import { PlayIcon, SpotifyIcon, ArrowIcon, CheckIcon } from "@/components/ui/icons";
+import { PlayIcon, SpotifyIcon, ArrowIcon, CheckIcon, HeartIcon, CloseIcon } from "@/components/ui/icons";
 import { ImportModal } from "./ImportModal";
 
 type Me = {
@@ -16,6 +16,7 @@ type Me = {
   spotifyConfigured: boolean;
   universe: number;
   engine: string;
+  taste?: { interactions: number; lean: string[] };
 };
 type QueueTrack = {
   id: string;
@@ -34,6 +35,7 @@ type MomentResult = {
   confidence: number;
   model: string;
   connected: boolean;
+  momentId?: string | null;
   queue: QueueTrack[];
 };
 
@@ -101,11 +103,19 @@ export function Studio() {
   const [loading, setLoading] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [reacted, setReacted] = useState<Record<string, "fit" | "skip">>({});
+  const [taste, setTaste] = useState<{ interactions: number; lean: string[] }>({
+    interactions: 0,
+    lean: [],
+  });
 
   useEffect(() => {
     fetch("/api/me")
       .then((r) => r.json())
-      .then(setMe)
+      .then((data) => {
+        setMe(data);
+        if (data?.taste) setTaste(data.taste);
+      })
       .catch(() => {});
     const connect = new URLSearchParams(window.location.search).get("connect");
     if (connect === "success")
@@ -128,6 +138,20 @@ export function Studio() {
       /* ignore */
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function react(trackId: string, kind: "fit" | "skip") {
+    setReacted((m) => ({ ...m, [trackId]: kind }));
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId, momentId: result?.momentId ?? null, kind }),
+      }).then((r) => r.json());
+      if (res?.lean) setTaste({ interactions: res.interactions, lean: res.lean });
+    } catch {
+      /* keep the optimistic UI even if the network blips */
     }
   }
 
@@ -315,6 +339,24 @@ export function Studio() {
                   <span className="eyebrow">Queue for this moment</span>
                   <Equalizer bars={10} className="h-4 w-14" />
                 </div>
+                {taste.interactions > 0 && (
+                  <div className="mb-1 flex flex-wrap items-center gap-1.5 rounded-md border border-line bg-ink-700/40 px-2.5 py-1.5">
+                    <span className="font-mono text-[0.55rem] uppercase tracking-[0.12em] text-paper-faint">
+                      your taste graph
+                    </span>
+                    {taste.lean.map((d) => (
+                      <span
+                        key={d}
+                        className="rounded-full bg-brand/10 px-2 py-0.5 font-mono text-[0.6rem] text-brand-light"
+                      >
+                        {d}
+                      </span>
+                    ))}
+                    <span className="ml-auto font-mono text-[0.55rem] text-paper-faint">
+                      {taste.interactions} signal{taste.interactions === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                )}
                 <AnimatePresence mode="popLayout">
                   {result.queue.map((q, i) => {
                     const [from, to] = artColors(q.emotion);
@@ -330,29 +372,70 @@ export function Studio() {
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.32, delay: i * 0.04 }}
-                        className="group flex items-center gap-3 rounded-lg border border-line bg-ink-700/60 p-2.5 transition-colors hover:border-line-strong hover:bg-ink-700"
+                        className={`group flex items-center gap-3 rounded-lg border border-line bg-ink-700/60 p-2.5 transition-colors hover:border-line-strong hover:bg-ink-700 ${
+                          reacted[q.id] === "skip" ? "opacity-40" : ""
+                        }`}
                       >
                         <span className="w-5 shrink-0 text-center font-mono text-[0.62rem] text-paper-faint">
                           {i === 0 ? <PlayIcon className="mx-auto size-3.5 text-brand-light" /> : i + 1}
                         </span>
                         <MoodArt from={from} to={to} className="size-11 shrink-0" rounded="rounded-md" />
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-paper">{q.title}</p>
+                          <p
+                            className={`truncate text-sm font-semibold text-paper ${
+                              reacted[q.id] === "skip" ? "line-through" : ""
+                            }`}
+                          >
+                            {q.title}
+                          </p>
                           <p className="truncate font-mono text-[0.62rem] text-paper-mute">
                             {q.artist}
                             {q.why.length ? ` · ${q.why.join(" · ")}` : ""}
                           </p>
                         </div>
-                        <span className="flex shrink-0 items-center gap-2">
-                          <SpotifyIcon className="size-4 text-brand-light opacity-0 transition-opacity group-hover:opacity-100" />
-                          <span className="font-mono text-[0.62rem] text-brand-light">{q.fit}%</span>
+                        <span className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              react(q.id, "fit");
+                            }}
+                            title="Love this — teach Moodify to find more like it"
+                            className={`grid size-7 place-items-center rounded-md border transition-colors ${
+                              reacted[q.id] === "fit"
+                                ? "border-brand/60 bg-brand/15 text-brand-light"
+                                : "border-line text-paper-faint opacity-0 hover:border-line-strong hover:text-paper group-hover:opacity-100"
+                            }`}
+                          >
+                            <HeartIcon className="size-3.5" filled={reacted[q.id] === "fit"} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              react(q.id, "skip");
+                            }}
+                            title="Not feeling it — fewer like this"
+                            className={`grid size-7 place-items-center rounded-md border transition-colors ${
+                              reacted[q.id] === "skip"
+                                ? "border-line-strong bg-ink-500 text-paper-mute"
+                                : "border-line text-paper-faint opacity-0 hover:border-line-strong hover:text-paper group-hover:opacity-100"
+                            }`}
+                          >
+                            <CloseIcon className="size-3" />
+                          </button>
+                          <span className="ml-1 w-9 text-right font-mono text-[0.62rem] text-brand-light">
+                            {q.fit}%
+                          </span>
                         </span>
                       </motion.a>
                     );
                   })}
                 </AnimatePresence>
                 <p className="mt-2 inline-flex items-center gap-1.5 font-mono text-[0.55rem] uppercase tracking-[0.08em] text-paper-faint">
-                  <CheckIcon className="size-3" /> tap a track to play on spotify · drawn from your
+                  <CheckIcon className="size-3" /> tap to play on spotify · react to teach your taste · from your
                   {result.connected ? " spotify library" : " starter universe"}
                 </p>
               </div>

@@ -3,6 +3,7 @@ import { getOrCreateUserId } from "@/server/session";
 import { ensureStarterUniverse } from "@/server/seed";
 import { isConnected, isConfigured } from "@/server/spotify";
 import { getEmotionProvider } from "@/server/emotion/provider";
+import { getTaste } from "@/server/taste";
 import { one, dbMode } from "@/server/db";
 
 export const runtime = "nodejs";
@@ -16,6 +17,7 @@ export async function GET() {
     `select display_name, is_anonymous, plan from app_users where id = $1`,
     [userId]
   );
+  const taste = await getTaste(userId);
 
   return NextResponse.json({
     user: { id: userId, ...(user ?? {}) },
@@ -24,5 +26,6 @@ export async function GET() {
     universe,
     engine: getEmotionProvider().name,
     db: dbMode(),
+    taste: { interactions: taste.interactions, lean: taste.lean.map((d) => d.name) },
   });
 }
