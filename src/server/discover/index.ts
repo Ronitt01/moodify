@@ -1,10 +1,11 @@
 import "server-only";
 import { query, toVec, toTextArray } from "@/server/db";
 import { tagTrack } from "@/server/emotion/track";
-import { topDims, vec, clampVec, lerp, EMOTION_DIMS, type DimName, type EmotionInput } from "@/server/emotion/space";
+import { topDims, vec, clampVec, lerp, affinity, EMOTION_DIMS, type DimName, type EmotionInput } from "@/server/emotion/space";
 import type { MomentReading } from "@/server/emotion/moment";
 import { topTracksByTag, topTracksByArtist, lastfmConfigured, type LastfmTrack } from "@/server/lastfm";
 import { rankCandidates, type CandidateRow, type QueueTrack } from "@/server/engine";
+import { getQuizPrefs, type QuizArtist } from "@/server/taste";
 
 /**
  * Discovery — the "all of music" universe, free of Spotify Premium.
@@ -152,6 +153,17 @@ async function persistTracks(items: Item[]): Promise<CandidateRow[]> {
   return rows;
 }
 
+/** Among the user's quiz artists, the one whose vibe best fits this moment. */
+function pickQuizArtist(artists: QuizArtist[], target: number[]): string | undefined {
+  let best: { name: string; s: number } | undefined;
+  for (const a of artists) {
+    if (!a.emotion?.length) continue;
+    const s = affinity(target, a.emotion);
+    if (!best || s > best.s) best = { name: a.name, s };
+  }
+  return best && best.s > 0.58 ? best.name : undefined;
+}
+
 /** Returns a ranked queue sourced live from Last.fm, or null to fall back. */
 export async function discover(
   userId: string,
@@ -161,6 +173,8 @@ export async function discover(
   artist?: string
 ): Promise<QueueTrack[] | null> {
   if (!lastfmConfigured()) return null;
+
+  const prefs = await getQuizPrefs(userId);
 
   const sig = reading.signals as Record<string, string | null | undefined>;
   const sit = sig?.situation ? SITUATION_TAG[String(sig.situation).toLowerCase()] : undefined;
@@ -175,14 +189,21 @@ export async function discover(
   const langs = languages.length ? languages.map((l) => l.toLowerCase()) : ["english"];
   const includeGlobal = langs.includes("english");
   const langTags = Array.from(new Set(langs.flatMap((l) => LANGUAGE_TAGS[l] ?? [])));
+  // The user's quiz vibes refine the global pool toward their genres (but don't
+  // override an explicit language-only request).
+  const vibeTags = includeGlobal ? prefs.vibes.slice(0, 3) : [];
   const finalTags = Array.from(
-    new Set([...(includeGlobal ? uniqueMoodTags : []), ...langTags])
-  ).slice(0, 6);
+    new Set([...(includeGlobal ? uniqueMoodTags : []), ...langTags, ...vibeTags])
+  ).slice(0, 8);
+
+  // Feature the named artist, or — failing that — the quiz artist that best fits
+  // this moment's mood, so moments quietly play the user's own favourites.
+  const featuredArtist = (artist && artist.trim()) || pickQuizArtist(prefs.artists, reading.target);
 
   // 1. Pull mood/language tracks and (optionally) the featured artist concurrently.
   const [lists, artistTracks] = await Promise.all([
     finalTags.length ? Promise.all(finalTags.map((t) => topTracksByTag(t, 30))) : Promise.resolve<LastfmTrack[][]>([]),
-    artist && artist.trim() ? topTracksByArtist(artist.trim(), 12) : Promise.resolve<LastfmTrack[]>([]),
+    featuredArtist ? topTracksByArtist(featuredArtist, 12) : Promise.resolve<LastfmTrack[]>([]),
   ]);
 
   // 2. Dedupe tag tracks, collecting every mood tag each one matched.

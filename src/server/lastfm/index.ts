@@ -54,6 +54,30 @@ export async function topTracksByTag(tag: string, limit = 30): Promise<LastfmTra
   }
 }
 
+interface ArtistTopTagsResp {
+  toptags?: { tag?: Array<{ name?: string }> };
+}
+
+/** An artist's defining tags (genres/moods) — used to derive their emotion. */
+export async function artistTopTags(artist: string, limit = 6): Promise<string[]> {
+  const key = process.env.LASTFM_API_KEY;
+  if (!key || !artist.trim()) return [];
+  const url =
+    `${API}?method=artist.gettoptags&artist=${encodeURIComponent(artist.trim())}` +
+    `&api_key=${key}&format=json&autocorrect=1`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = (await res.json()) as ArtistTopTagsResp;
+    return (data.toptags?.tag ?? [])
+      .slice(0, limit)
+      .map((t) => (t.name ?? "").trim().toLowerCase())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 interface ArtistTopTracks {
   toptracks?: {
     track?: Array<{ name?: string; mbid?: string; artist?: { name?: string } }>;

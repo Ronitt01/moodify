@@ -116,3 +116,59 @@ export async function recordFeedback(
 
   return { profile, interactions, lean: leanDims(profile) };
 }
+
+/**
+ * Seed the taste profile from an onboarding quiz — move it strongly toward the
+ * centroid of the answers' emotion vectors so the very first moment is already
+ * personalized. Counts each answer as an interaction (ramps the engine's weight).
+ */
+export async function seedFromQuiz(userId: string, vectors: number[][]): Promise<TasteProfile> {
+  if (!vectors.length) return getTaste(userId);
+  const cur = await one<{ profile: string | null; interactions: number }>(
+    `select profile::text as profile, interactions from taste_graph where user_id = $1`,
+    [userId]
+  );
+  let profile = cur?.profile ? parseVec(cur.profile) : NEUTRAL();
+  const centroid = new Array(EMOTION_DIMS.length).fill(0);
+  for (const v of vectors) for (let i = 0; i < centroid.length; i++) centroid[i] += v[i] ?? 0;
+  for (let i = 0; i < centroid.length; i++) centroid[i] /= vectors.length;
+  profile = clampVec(lerp(profile, centroid, 0.5));
+  const interactions = (cur ? Number(cur.interactions) : 0) + vectors.length;
+  await query(
+    `insert into taste_graph (user_id, profile, interactions, updated_at)
+       values ($1, $2::vector, $3, now())
+     on conflict (user_id) do update
+       set profile = excluded.profile, interactions = excluded.interactions, updated_at = now()`,
+    [userId, toVec(profile), interactions]
+  );
+  return { profile, interactions, lean: leanDims(profile) };
+}
+
+export interface QuizArtist {
+  name: string;
+  emotion: number[];
+}
+
+/** Read the user's saved quiz answers (favourite artists + their emotion, vibes). */
+export async function getQuizPrefs(
+  userId: string
+): Promise<{ artists: QuizArtist[]; vibes: string[] }> {
+  const row = await one<{ value: unknown }>(
+    `select value from feedback where user_id = $1 and kind = 'quiz' order by created_at desc limit 1`,
+    [userId]
+  );
+  if (!row?.value) return { artists: [], vibes: [] };
+  try {
+    const v = (typeof row.value === "string" ? JSON.parse(row.value) : row.value) as {
+      artists?: { name?: string; emotion?: number[] }[];
+      vibes?: string[];
+    };
+    const artists: QuizArtist[] = (v.artists ?? [])
+      .filter((a) => a?.name)
+      .map((a) => ({ name: String(a.name), emotion: Array.isArray(a.emotion) ? a.emotion : [] }));
+    const vibes = (v.vibes ?? []).map(String);
+    return { artists, vibes };
+  } catch {
+    return { artists: [], vibes: [] };
+  }
+}

@@ -9,6 +9,7 @@ import { Bracket } from "@/components/ui/Tag";
 import { Logo } from "@/components/ui/Logo";
 import { PlayIcon, SpotifyIcon, ArrowIcon, CheckIcon, HeartIcon, CloseIcon } from "@/components/ui/icons";
 import { ImportModal } from "./ImportModal";
+import { QuizModal } from "./QuizModal";
 
 type Me = {
   user: { id: string; display_name?: string | null; is_anonymous?: boolean };
@@ -125,6 +126,7 @@ export function Studio() {
   });
   const [languages, setLanguages] = useState<string[]>(["english"]);
   const [artist, setArtist] = useState("");
+  const [quizOpen, setQuizOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/me")
@@ -132,6 +134,12 @@ export function Studio() {
       .then((data) => {
         setMe(data);
         if (data?.taste) setTaste(data.taste);
+        try {
+          const onboarded = localStorage.getItem("moodify_onboarded");
+          if (!onboarded && data?.taste && data.taste.interactions === 0) setQuizOpen(true);
+        } catch {
+          /* ignore */
+        }
       })
       .catch(() => {});
     try {
@@ -545,6 +553,10 @@ export function Studio() {
           setResult(null);
         }}
       />
+
+      {quizOpen && (
+        <QuizModal onClose={() => setQuizOpen(false)} onComplete={(t) => setTaste(t)} />
+      )}
     </div>
   );
 }
