@@ -16,8 +16,12 @@ import { SCHEMA_SQL } from "./schema";
  * and serverless warm invocations reuse one connection.
  */
 
-const DATA_DIR =
-  process.env.PGLITE_DATA_DIR || (process.env.VERCEL ? "/tmp/moodify-pglite" : "./.pglite");
+// On Vercel only /tmp is writable, so always use it there — never let a stray
+// PGLITE_DATA_DIR (e.g. copied from a local .env) point PGlite at a read-only
+// path and hard-crash every API route.
+const DATA_DIR = process.env.VERCEL
+  ? "/tmp/moodify-pglite"
+  : process.env.PGLITE_DATA_DIR || "./.pglite";
 
 function databaseUrl(): string | null {
   return (
