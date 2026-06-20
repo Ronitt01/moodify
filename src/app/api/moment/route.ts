@@ -4,6 +4,7 @@ import { getOrCreateUserId } from "@/server/session";
 import { ensureStarterUniverse } from "@/server/seed";
 import { getEmotionProvider } from "@/server/emotion/provider";
 import { recommend } from "@/server/engine";
+import { discover } from "@/server/discover";
 import { named } from "@/server/emotion/space";
 import { isConnected } from "@/server/spotify";
 import { query, one, toVec } from "@/server/db";
@@ -39,7 +40,12 @@ export async function POST(req: Request) {
 
   const ctx = parsed.data.context ?? { hour: new Date().getHours() };
   const reading = await getEmotionProvider().readMoment(parsed.data.text || "", ctx);
-  const queue = await recommend(userId, reading, 12);
+
+  // Prefer live discovery across all of Spotify; fall back to the user's own
+  // universe (seed / imported / library) when Search is unavailable.
+  const discovered = await discover(userId, reading, 12).catch(() => null);
+  const queue = discovered && discovered.length > 0 ? discovered : await recommend(userId, reading, 12);
+  const usedDiscover = Boolean(discovered && discovered.length > 0);
 
   // Persist the moment + queue — fuel for the Emotional Taste Graph.
   const moment = await one<{ id: string }>(
@@ -76,6 +82,7 @@ export async function POST(req: Request) {
     confidence: reading.confidence,
     model: reading.model,
     connected: await isConnected(userId),
+    discover: usedDiscover,
     queue,
   });
 }

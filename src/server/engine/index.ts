@@ -23,13 +23,15 @@ export interface QueueTrack {
   genres: string[];
   year: number | null;
   source: string;
+  externalId: string | null;
+  image: string | null;
   score: number;
   fit: number;
   why: string[];
   emotion: Record<DimName, number>;
 }
 
-interface CandidateRow {
+export interface CandidateRow {
   id: string;
   title: string;
   artist: string;
@@ -37,6 +39,8 @@ interface CandidateRow {
   year: number | null;
   source: string;
   emotion: unknown;
+  external_id?: string | null;
+  image_url?: string | null;
 }
 
 const WHY_PHRASE: Partial<Record<DimName, string>> = {
@@ -71,36 +75,24 @@ function contextBoost(track: number[], reading: MomentReading): number {
   return b;
 }
 
-export async function recommend(
+/**
+ * Shared taste-aware re-rank over any candidate set (local universe OR live
+ * Spotify discovery). pgvector already did coarse retrieval upstream; here we
+ * apply centered-cosine affinity, the user's learned taste profile, soft
+ * context nudges, reaction memory, and artist diversity — then explain why.
+ */
+export async function rankCandidates(
   userId: string,
   reading: MomentReading,
+  rows: CandidateRow[],
   limit = 12
 ): Promise<QueueTrack[]> {
-  const target = toVec(reading.target);
-
-  // Stage 1 — pgvector candidate retrieval, plus the user's learned taste
-  // profile and reaction history (all concurrent — ~one round-trip).
-  const [rows, taste, fb] = await Promise.all([
-    query<CandidateRow>(
-      `select t.id, t.title, t.artist, t.genres, t.year, t.source,
-              te.emotion::text as emotion
-         from master_playlist_tracks m
-         join tracks t          on t.id = m.track_id
-         join track_emotions te on te.track_id = t.id
-        where m.user_id = $1
-        order by te.emotion <=> $2::vector
-        limit 80`,
-      [userId, target]
-    ),
-    getTaste(userId),
-    getFeedbackSets(userId),
-  ]);
+  const [taste, fb] = await Promise.all([getTaste(userId), getFeedbackSets(userId)]);
 
   // Taste influence ramps up with how much we've learned (capped), so a brand
   // new user is driven purely by the moment, not a thin, noisy profile.
   const tasteW = taste.profile ? Math.min(0.22, 0.05 + taste.interactions * 0.015) : 0;
 
-  // Stage 2 — rich re-rank.
   type Scored = QueueTrack & { _artist: string };
   const scored: Scored[] = rows.map((r) => {
     const emo = parseVec(r.emotion);
@@ -126,6 +118,8 @@ export async function recommend(
       genres: parseTextArray(r.genres),
       year: r.year,
       source: r.source,
+      externalId: r.external_id ?? null,
+      image: r.image_url ?? null,
       score,
       fit: 0,
       why,
@@ -151,4 +145,28 @@ export async function recommend(
   });
 
   return top.map(({ _artist, ...rest }) => rest);
+}
+
+/**
+ * Recommend from the user's own universe (seed / imported / Spotify library):
+ * pgvector candidate retrieval, then the shared taste-aware re-rank.
+ */
+export async function recommend(
+  userId: string,
+  reading: MomentReading,
+  limit = 12
+): Promise<QueueTrack[]> {
+  const target = toVec(reading.target);
+  const rows = await query<CandidateRow>(
+    `select t.id, t.title, t.artist, t.genres, t.year, t.source, t.external_id, t.image_url,
+            te.emotion::text as emotion
+       from master_playlist_tracks m
+       join tracks t          on t.id = m.track_id
+       join track_emotions te on te.track_id = t.id
+      where m.user_id = $1
+      order by te.emotion <=> $2::vector
+      limit 80`,
+    [userId, target]
+  );
+  return rankCandidates(userId, reading, rows, limit);
 }

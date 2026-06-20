@@ -1,0 +1,55 @@
+import "server-only";
+
+/**
+ * Last.fm source for discovery — free, no Premium, no user login.
+ *
+ * We use `tag.getTopTracks`: given a mood/genre tag (e.g. "melancholy",
+ * "energetic", "chillout"), Last.fm returns the top real tracks the community
+ * has tagged that way. That gives us emotionally-relevant candidates from a
+ * catalogue of millions, which we then tag + rank with Moodify's own engine and
+ * link out to Spotify for playback. Needs only a free LASTFM_API_KEY.
+ */
+
+const API = "https://ws.audioscrobbler.com/2.0/";
+
+export function lastfmConfigured(): boolean {
+  return Boolean(process.env.LASTFM_API_KEY);
+}
+
+export interface LastfmTrack {
+  title: string;
+  artist: string;
+  mbid: string | null;
+  tag: string; // the mood tag it was found under (drives emotion tagging)
+}
+
+interface TagTopTracks {
+  tracks?: {
+    track?: Array<{ name?: string; mbid?: string; artist?: { name?: string } }>;
+  };
+}
+
+/** Top tracks Last.fm's community tagged with `tag`. Returns [] on any failure. */
+export async function topTracksByTag(tag: string, limit = 30): Promise<LastfmTrack[]> {
+  const key = process.env.LASTFM_API_KEY;
+  if (!key) return [];
+  const url =
+    `${API}?method=tag.gettoptracks&tag=${encodeURIComponent(tag)}` +
+    `&api_key=${key}&format=json&limit=${limit}`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = (await res.json()) as TagTopTracks;
+    const arr = data.tracks?.track ?? [];
+    return arr
+      .map((t) => ({
+        title: (t.name ?? "").trim(),
+        artist: (t.artist?.name ?? "").trim(),
+        mbid: t.mbid || null,
+        tag,
+      }))
+      .filter((t) => t.title && t.artist);
+  } catch {
+    return [];
+  }
+}

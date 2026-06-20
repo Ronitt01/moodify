@@ -25,6 +25,8 @@ type QueueTrack = {
   genres: string[];
   year: number | null;
   source: string;
+  externalId?: string | null;
+  image?: string | null;
   fit: number;
   why: string[];
   emotion: Record<string, number>;
@@ -36,6 +38,7 @@ type MomentResult = {
   model: string;
   connected: boolean;
   momentId?: string | null;
+  discover?: boolean;
   queue: QueueTrack[];
 };
 
@@ -363,7 +366,11 @@ export function Studio() {
                     return (
                       <motion.a
                         key={q.id}
-                        href={`https://open.spotify.com/search/${encodeURIComponent(`${q.title} ${q.artist}`)}`}
+                        href={
+                          q.source === "spotify" && q.externalId
+                            ? `https://open.spotify.com/track/${q.externalId}`
+                            : `https://open.spotify.com/search/${encodeURIComponent(`${q.title} ${q.artist}`)}`
+                        }
                         target="_blank"
                         rel="noopener noreferrer"
                         title={`Play "${q.title}" by ${q.artist} on Spotify`}
@@ -435,8 +442,12 @@ export function Studio() {
                   })}
                 </AnimatePresence>
                 <p className="mt-2 inline-flex items-center gap-1.5 font-mono text-[0.55rem] uppercase tracking-[0.08em] text-paper-faint">
-                  <CheckIcon className="size-3" /> tap to play on spotify · react to teach your taste · from your
-                  {result.connected ? " spotify library" : " starter universe"}
+                  <CheckIcon className="size-3" /> tap to play on spotify · react to teach your taste ·
+                  {result.discover
+                    ? " sourced across all of music"
+                    : result.connected
+                      ? " from your spotify library"
+                      : " from the starter universe"}
                 </p>
               </div>
             )}
