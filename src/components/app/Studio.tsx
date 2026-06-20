@@ -319,14 +319,18 @@ export function Studio() {
                   {result.queue.map((q, i) => {
                     const [from, to] = artColors(q.emotion);
                     return (
-                      <motion.div
+                      <motion.a
                         key={q.id}
+                        href={`https://open.spotify.com/search/${encodeURIComponent(`${q.title} ${q.artist}`)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`Play "${q.title}" by ${q.artist} on Spotify`}
                         layout
                         initial={{ opacity: 0, x: 16 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.32, delay: i * 0.04 }}
-                        className="flex items-center gap-3 rounded-lg border border-line bg-ink-700/60 p-2.5 transition-colors hover:border-line-strong"
+                        className="group flex items-center gap-3 rounded-lg border border-line bg-ink-700/60 p-2.5 transition-colors hover:border-line-strong hover:bg-ink-700"
                       >
                         <span className="w-5 shrink-0 text-center font-mono text-[0.62rem] text-paper-faint">
                           {i === 0 ? <PlayIcon className="mx-auto size-3.5 text-brand-light" /> : i + 1}
@@ -339,16 +343,17 @@ export function Studio() {
                             {q.why.length ? ` · ${q.why.join(" · ")}` : ""}
                           </p>
                         </div>
-                        <span className="shrink-0 font-mono text-[0.62rem] text-brand-light">
-                          {q.fit}%
+                        <span className="flex shrink-0 items-center gap-2">
+                          <SpotifyIcon className="size-4 text-brand-light opacity-0 transition-opacity group-hover:opacity-100" />
+                          <span className="font-mono text-[0.62rem] text-brand-light">{q.fit}%</span>
                         </span>
-                      </motion.div>
+                      </motion.a>
                     );
                   })}
                 </AnimatePresence>
                 <p className="mt-2 inline-flex items-center gap-1.5 font-mono text-[0.55rem] uppercase tracking-[0.08em] text-paper-faint">
-                  <CheckIcon className="size-3" /> drawn only from your master playlists ·
-                  {result.connected ? " spotify" : " starter universe"}
+                  <CheckIcon className="size-3" /> tap a track to play on spotify · drawn from your
+                  {result.connected ? " spotify library" : " starter universe"}
                 </p>
               </div>
             )}
