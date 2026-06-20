@@ -21,6 +21,7 @@ const Body = z.object({
       motion: z.string().max(24).optional(),
     })
     .optional(),
+  languages: z.array(z.string().max(20)).max(12).optional(),
 });
 
 export async function POST(req: Request) {
@@ -43,7 +44,7 @@ export async function POST(req: Request) {
 
   // Prefer live discovery across all of Spotify; fall back to the user's own
   // universe (seed / imported / library) when Search is unavailable.
-  const discovered = await discover(userId, reading, 12).catch(() => null);
+  const discovered = await discover(userId, reading, 12, parsed.data.languages ?? []).catch(() => null);
   const queue = discovered && discovered.length > 0 ? discovered : await recommend(userId, reading, 12);
   const usedDiscover = Boolean(discovered && discovered.length > 0);
 

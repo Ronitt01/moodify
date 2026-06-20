@@ -51,6 +51,18 @@ const PRESETS = [
   "Exhausted but I need energy",
 ];
 
+const LANGS: { id: string; label: string }[] = [
+  { id: "english", label: "English" },
+  { id: "hindi", label: "Hindi" },
+  { id: "punjabi", label: "Punjabi" },
+  { id: "tamil", label: "Tamil" },
+  { id: "telugu", label: "Telugu" },
+  { id: "korean", label: "Korean" },
+  { id: "spanish", label: "Spanish" },
+  { id: "japanese", label: "Japanese" },
+  { id: "arabic", label: "Arabic" },
+];
+
 const DIM_COLOR: Record<string, string> = {
   energy: "#FF5C38",
   valence: "#FFB23E",
@@ -111,6 +123,7 @@ export function Studio() {
     interactions: 0,
     lean: [],
   });
+  const [languages, setLanguages] = useState<string[]>(["english"]);
 
   useEffect(() => {
     fetch("/api/me")
@@ -120,6 +133,12 @@ export function Studio() {
         if (data?.taste) setTaste(data.taste);
       })
       .catch(() => {});
+    try {
+      const saved = JSON.parse(localStorage.getItem("moodify_langs") || "[]");
+      if (Array.isArray(saved) && saved.length) setLanguages(saved);
+    } catch {
+      /* ignore bad localStorage */
+    }
     const connect = new URLSearchParams(window.location.search).get("connect");
     if (connect === "success")
       setBanner("Spotify connected — your library is now your universe.");
@@ -134,7 +153,7 @@ export function Studio() {
       const res = await fetch("/api/moment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: moment, context: { hour: new Date().getHours() } }),
+        body: JSON.stringify({ text: moment, context: { hour: new Date().getHours() }, languages }),
       });
       setResult(await res.json());
     } catch {
@@ -156,6 +175,19 @@ export function Studio() {
     } catch {
       /* keep the optimistic UI even if the network blips */
     }
+  }
+
+  function toggleLang(id: string) {
+    setLanguages((prev) => {
+      const next = prev.includes(id) ? prev.filter((l) => l !== id) : [...prev, id];
+      const final = next.length ? next : ["english"];
+      try {
+        localStorage.setItem("moodify_langs", JSON.stringify(final));
+      } catch {
+        /* ignore */
+      }
+      return final;
+    });
   }
 
   function connect() {
@@ -266,6 +298,29 @@ export function Studio() {
                   {p.length > 30 ? p.slice(0, 30) + "…" : p}
                 </button>
               ))}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 font-mono text-[0.55rem] uppercase tracking-[0.12em] text-paper-faint">
+                languages
+              </span>
+              {LANGS.map((l) => {
+                const on = languages.includes(l.id);
+                return (
+                  <button
+                    key={l.id}
+                    type="button"
+                    onClick={() => toggleLang(l.id)}
+                    className={`rounded-full border px-2.5 py-1 font-mono text-[0.58rem] transition-colors ${
+                      on
+                        ? "border-brand/60 bg-brand/15 text-brand-light"
+                        : "border-line text-paper-mute hover:border-line-strong hover:text-paper"
+                    }`}
+                  >
+                    {l.label}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">

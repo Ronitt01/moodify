@@ -82,27 +82,55 @@ const TAG_EMOTION: Record<string, EmotionInput> = {
   driving: { energy: 0.62, nostalgia: 0.45, hope: 0.45 },
 };
 
+// Language → Last.fm tags that surface that language's music. "english" is the
+// global/default pool (the mood tags already return mostly English). Combined
+// mood+language tags don't exist on Last.fm, so a language is its own pool that
+// we present for the moment's vibe.
+const LANGUAGE_TAGS: Record<string, string[]> = {
+  english: [],
+  hindi: ["bollywood"],
+  punjabi: ["punjabi"],
+  tamil: ["tamil"],
+  telugu: ["telugu"],
+  korean: ["k-pop"],
+  spanish: ["latin"],
+  japanese: ["j-pop"],
+  arabic: ["arabic"],
+};
+
 /** Returns a ranked queue sourced live from Last.fm, or null to fall back. */
 export async function discover(
   userId: string,
   reading: MomentReading,
-  limit = 12
+  limit = 12,
+  languages: string[] = []
 ): Promise<QueueTrack[] | null> {
   if (!lastfmConfigured()) return null;
 
   const sig = reading.signals as Record<string, string | null | undefined>;
   const sit = sig?.situation ? SITUATION_TAG[String(sig.situation).toLowerCase()] : undefined;
-  const tags: string[] = [];
-  if (sit) tags.push(sit);
+  const moodTags: string[] = [];
+  if (sit) moodTags.push(sit);
   for (const d of topDims(reading.target, 3)) {
-    if (d.value > 0.45 && DIM_TAG[d.name]) tags.push(DIM_TAG[d.name] as string);
+    if (d.value > 0.45 && DIM_TAG[d.name]) moodTags.push(DIM_TAG[d.name] as string);
   }
-  const uniqueTags = Array.from(new Set(tags)).slice(0, 4);
-  if (!uniqueTags.length) return null;
+  const uniqueMoodTags = Array.from(new Set(moodTags)).slice(0, 4);
+  const moodTagSet = new Set(uniqueMoodTags);
 
-  // 1. Pull top tracks for each mood tag; collect EVERY tag a track matched
+  // Language filter: English/default searches the mood tags (precise mood,
+  // mostly English/global); other languages add their own pools.
+  const langs = languages.length ? languages.map((l) => l.toLowerCase()) : ["english"];
+  const includeGlobal = langs.includes("english");
+  const langTags = Array.from(new Set(langs.flatMap((l) => LANGUAGE_TAGS[l] ?? [])));
+  const tagsToSearch = Array.from(
+    new Set([...(includeGlobal ? uniqueMoodTags : []), ...langTags])
+  ).slice(0, 6);
+  const finalTags = tagsToSearch.length ? tagsToSearch : uniqueMoodTags;
+  if (!finalTags.length) return null;
+
+  // 1. Pull top tracks for each tag; collect EVERY tag a track matched
   //    (cross-tag agreement is the signal that it really fits this moment).
-  const lists = await Promise.all(uniqueTags.map((t) => topTracksByTag(t, 30)));
+  const lists = await Promise.all(finalTags.map((t) => topTracksByTag(t, 30)));
   const byKey = new Map<string, { t: LastfmTrack; tags: Set<string> }>();
   for (const list of lists) {
     for (const t of list) {
@@ -143,10 +171,18 @@ export async function discover(
     const ext = slug(`${e.t.title}-${e.t.artist}`);
     const id = idByExt.get(ext);
     if (!id) continue;
-    const moodVec = new Array(EMOTION_DIMS.length).fill(0);
-    for (const tg of e.tags) {
-      const v = vec(TAG_EMOTION[tg] ?? {});
-      for (let i = 0; i < moodVec.length; i++) moodVec[i] = Math.max(moodVec[i], v[i]);
+    // Mood tracks → union of their matched moods. Language-pool tracks (no mood
+    // tag) → seeded to the moment's own target so they fit the requested vibe.
+    const moodMatches = Array.from(e.tags).filter((tg) => moodTagSet.has(tg));
+    let moodVec: number[];
+    if (moodMatches.length) {
+      moodVec = new Array(EMOTION_DIMS.length).fill(0);
+      for (const tg of moodMatches) {
+        const v = vec(TAG_EMOTION[tg] ?? {});
+        for (let i = 0; i < moodVec.length; i++) moodVec[i] = Math.max(moodVec[i], v[i]);
+      }
+    } else {
+      moodVec = reading.target.slice();
     }
     const nuance = tagTrack({ title: e.t.title, artist: e.t.artist, genres: Array.from(e.tags) }).emotion;
     const emotion = clampVec(lerp(moodVec, nuance, 0.3));
@@ -175,6 +211,26 @@ export async function discover(
     );
   }
 
-  // 4. Same emotion + taste-graph re-rank as the local universe.
-  return rankCandidates(userId, reading, rows, limit);
+  // 4. Rank with the shared taste-aware engine. With multiple languages active,
+  //    balance the queue round-robin across them so one can't crowd the others
+  //    out (precise-mood English would otherwise dominate a vibe-seeded pool).
+  const ranked = await rankCandidates(userId, reading, rows, Math.max(limit, rows.length));
+  const activeLangs = includeGlobal ? langs : langs.filter((l) => (LANGUAGE_TAGS[l] ?? []).length);
+  if (activeLangs.length <= 1) return ranked.slice(0, limit);
+
+  const langTagSet = new Set(langTags);
+  const langOf = (t: QueueTrack) => t.genres.find((g) => langTagSet.has(g)) ?? "english";
+  const buckets = new Map<string, QueueTrack[]>();
+  for (const t of ranked) {
+    const k = langOf(t);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k)!.push(t);
+  }
+  const order = Array.from(buckets.keys());
+  const out: QueueTrack[] = [];
+  for (let i = 0; out.length < limit && order.some((k) => buckets.get(k)!.length); i++) {
+    const b = buckets.get(order[i % order.length])!;
+    if (b.length) out.push(b.shift()!);
+  }
+  return out;
 }
