@@ -124,6 +124,7 @@ export function Studio() {
     lean: [],
   });
   const [languages, setLanguages] = useState<string[]>(["english"]);
+  const [artist, setArtist] = useState("");
 
   useEffect(() => {
     fetch("/api/me")
@@ -153,7 +154,12 @@ export function Studio() {
       const res = await fetch("/api/moment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: moment, context: { hour: new Date().getHours() }, languages }),
+        body: JSON.stringify({
+          text: moment,
+          context: { hour: new Date().getHours() },
+          languages,
+          artist: artist.trim() || undefined,
+        }),
       });
       setResult(await res.json());
     } catch {
@@ -321,6 +327,27 @@ export function Studio() {
                   </button>
                 );
               })}
+            </div>
+
+            <div className="mt-3 flex items-center gap-2">
+              <span className="shrink-0 font-mono text-[0.55rem] uppercase tracking-[0.12em] text-paper-faint">
+                feature
+              </span>
+              <input
+                value={artist}
+                onChange={(e) => setArtist(e.target.value)}
+                placeholder="an artist (optional) — e.g. Cheema Y"
+                className="min-w-0 flex-1 rounded-lg border border-line bg-ink-500 px-3 py-2 font-mono text-[0.7rem] text-paper outline-none transition-colors placeholder:text-paper-faint focus:border-brand"
+              />
+              {artist && (
+                <button
+                  type="button"
+                  onClick={() => setArtist("")}
+                  className="shrink-0 font-mono text-[0.6rem] text-paper-faint hover:text-paper"
+                >
+                  clear
+                </button>
+              )}
             </div>
 
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">

@@ -53,3 +53,34 @@ export async function topTracksByTag(tag: string, limit = 30): Promise<LastfmTra
     return [];
   }
 }
+
+interface ArtistTopTracks {
+  toptracks?: {
+    track?: Array<{ name?: string; mbid?: string; artist?: { name?: string } }>;
+  };
+}
+
+/** A named artist's top tracks (autocorrected for casing/typos). [] on failure. */
+export async function topTracksByArtist(artist: string, limit = 12): Promise<LastfmTrack[]> {
+  const key = process.env.LASTFM_API_KEY;
+  if (!key || !artist.trim()) return [];
+  const url =
+    `${API}?method=artist.gettoptracks&artist=${encodeURIComponent(artist.trim())}` +
+    `&api_key=${key}&format=json&limit=${limit}&autocorrect=1`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = (await res.json()) as ArtistTopTracks;
+    const arr = data.toptracks?.track ?? [];
+    return arr
+      .map((t) => ({
+        title: (t.name ?? "").trim(),
+        artist: (t.artist?.name ?? artist).trim(),
+        mbid: t.mbid || null,
+        tag: "artist",
+      }))
+      .filter((t) => t.title && t.artist);
+  } catch {
+    return [];
+  }
+}

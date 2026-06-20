@@ -3,23 +3,21 @@ import { query, toVec, toTextArray } from "@/server/db";
 import { tagTrack } from "@/server/emotion/track";
 import { topDims, vec, clampVec, lerp, EMOTION_DIMS, type DimName, type EmotionInput } from "@/server/emotion/space";
 import type { MomentReading } from "@/server/emotion/moment";
-import { topTracksByTag, lastfmConfigured, type LastfmTrack } from "@/server/lastfm";
+import { topTracksByTag, topTracksByArtist, lastfmConfigured, type LastfmTrack } from "@/server/lastfm";
 import { rankCandidates, type CandidateRow, type QueueTrack } from "@/server/engine";
 
 /**
  * Discovery — the "all of music" universe, free of Spotify Premium.
  *
- * We translate a moment's top emotional dimensions into Last.fm mood/genre tags,
- * pull the community's top tracks for those tags (real songs from a catalogue of
- * millions), tag them with Moodify's emotion model, cache them so the catalogue
- * compounds, rank them with the same taste-aware engine, and link each out to
- * Spotify for playback. Falls back to the local universe if Last.fm isn't set up
- * or returns too little.
+ * A moment's top emotions become Last.fm mood tags; we pull the community's top
+ * tracks for them, tag with Moodify's emotion model, cache them (so the
+ * catalogue compounds), rank with the shared taste-aware engine, and link each
+ * out to Spotify. Optional language pools and a featured artist layer on top.
+ * Falls back to the local universe when Last.fm isn't set up or returns little.
  */
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-// Top emotion dimension → the Last.fm tag we search for it.
 const DIM_TAG: Partial<Record<DimName, string>> = {
   valence: "feel good",
   energy: "energetic",
@@ -39,7 +37,6 @@ const DIM_TAG: Partial<Record<DimName, string>> = {
   focus: "instrumental",
 };
 
-// Situation signal → an activity tag that sharpens discovery.
 const SITUATION_TAG: Record<string, string> = {
   workout: "workout",
   gym: "workout",
@@ -55,8 +52,6 @@ const SITUATION_TAG: Record<string, string> = {
   commute: "driving",
 };
 
-// Each tag's emotional profile — the dominant signal for a discovered track
-// (Last.fm already validated the track *is* this mood). 0..1 per named dim.
 const TAG_EMOTION: Record<string, EmotionInput> = {
   "feel good": { valence: 0.85, energy: 0.6, playfulness: 0.55, warmth: 0.5 },
   energetic: { energy: 0.9, arousal: 0.8, valence: 0.6 },
@@ -82,10 +77,6 @@ const TAG_EMOTION: Record<string, EmotionInput> = {
   driving: { energy: 0.62, nostalgia: 0.45, hope: 0.45 },
 };
 
-// Language → Last.fm tags that surface that language's music. "english" is the
-// global/default pool (the mood tags already return mostly English). Combined
-// mood+language tags don't exist on Last.fm, so a language is its own pool that
-// we present for the moment's vibe.
 const LANGUAGE_TAGS: Record<string, string[]> = {
   english: [],
   hindi: ["bollywood"],
@@ -98,57 +89,25 @@ const LANGUAGE_TAGS: Record<string, string[]> = {
   arabic: ["arabic"],
 };
 
-/** Returns a ranked queue sourced live from Last.fm, or null to fall back. */
-export async function discover(
-  userId: string,
-  reading: MomentReading,
-  limit = 12,
-  languages: string[] = []
-): Promise<QueueTrack[] | null> {
-  if (!lastfmConfigured()) return null;
+type Item = { title: string; artist: string; genres: string[]; emotion: number[] };
 
-  const sig = reading.signals as Record<string, string | null | undefined>;
-  const sit = sig?.situation ? SITUATION_TAG[String(sig.situation).toLowerCase()] : undefined;
-  const moodTags: string[] = [];
-  if (sit) moodTags.push(sit);
-  for (const d of topDims(reading.target, 3)) {
-    if (d.value > 0.45 && DIM_TAG[d.name]) moodTags.push(DIM_TAG[d.name] as string);
+/** Upsert tracks + emotions (one round-trip each), return them as CandidateRows. */
+async function persistTracks(items: Item[]): Promise<CandidateRow[]> {
+  // Dedupe by the slug id (the ON CONFLICT key) first — a single INSERT must not
+  // target the same row twice, or Postgres errors "cannot affect row a second
+  // time" (different titles can normalise to the same slug).
+  const byExt = new Map<string, Item>();
+  for (const it of items) {
+    const ext = slug(`${it.title}-${it.artist}`);
+    if (ext && !byExt.has(ext)) byExt.set(ext, it);
   }
-  const uniqueMoodTags = Array.from(new Set(moodTags)).slice(0, 4);
-  const moodTagSet = new Set(uniqueMoodTags);
+  const uniq = Array.from(byExt, ([ext, it]) => ({ ext, it }));
+  if (!uniq.length) return [];
 
-  // Language filter: English/default searches the mood tags (precise mood,
-  // mostly English/global); other languages add their own pools.
-  const langs = languages.length ? languages.map((l) => l.toLowerCase()) : ["english"];
-  const includeGlobal = langs.includes("english");
-  const langTags = Array.from(new Set(langs.flatMap((l) => LANGUAGE_TAGS[l] ?? [])));
-  const tagsToSearch = Array.from(
-    new Set([...(includeGlobal ? uniqueMoodTags : []), ...langTags])
-  ).slice(0, 6);
-  const finalTags = tagsToSearch.length ? tagsToSearch : uniqueMoodTags;
-  if (!finalTags.length) return null;
-
-  // 1. Pull top tracks for each tag; collect EVERY tag a track matched
-  //    (cross-tag agreement is the signal that it really fits this moment).
-  const lists = await Promise.all(finalTags.map((t) => topTracksByTag(t, 30)));
-  const byKey = new Map<string, { t: LastfmTrack; tags: Set<string> }>();
-  for (const list of lists) {
-    for (const t of list) {
-      const k = `${t.title.toLowerCase()}|${t.artist.toLowerCase()}`;
-      const e = byKey.get(k);
-      if (e) e.tags.add(t.tag);
-      else byKey.set(k, { t, tags: new Set([t.tag]) });
-    }
-  }
-  const entries = Array.from(byKey.values());
-  if (entries.length < 5) return null; // Last.fm down / too thin → fall back.
-
-  // 2. Upsert tracks (stable slug id, all matched moods as genres), RETURNING ids.
   const tParams: unknown[] = [];
-  const tTuples = entries.map((e) => {
-    const ext = slug(`${e.t.title}-${e.t.artist}`);
+  const tTuples = uniq.map(({ ext, it }) => {
     const b = tParams.length;
-    tParams.push(ext, e.t.title, e.t.artist, toTextArray(Array.from(e.tags)));
+    tParams.push(ext, it.title, it.artist, toTextArray(it.genres));
     return `('lastfm', $${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}::text[])`;
   });
   const idRows = await query<{ id: string; external_id: string }>(
@@ -160,41 +119,21 @@ export async function discover(
   );
   const idByExt = new Map(idRows.map((r) => [r.external_id, r.id]));
 
-  // 3. Emotion = the UNION of every matched mood (each at full strength) blended
-  //    with light artist/title nuance. A track tagged both "nostalgia" and
-  //    "melancholy" therefore points straight at a nostalgic-melancholic moment
-  //    and out-ranks a song that only carried one of those moods.
   const eParams: unknown[] = [];
   const eTuples: string[] = [];
   const rows: CandidateRow[] = [];
-  for (const e of entries) {
-    const ext = slug(`${e.t.title}-${e.t.artist}`);
+  for (const { ext, it } of uniq) {
     const id = idByExt.get(ext);
     if (!id) continue;
-    // Mood tracks → union of their matched moods. Language-pool tracks (no mood
-    // tag) → seeded to the moment's own target so they fit the requested vibe.
-    const moodMatches = Array.from(e.tags).filter((tg) => moodTagSet.has(tg));
-    let moodVec: number[];
-    if (moodMatches.length) {
-      moodVec = new Array(EMOTION_DIMS.length).fill(0);
-      for (const tg of moodMatches) {
-        const v = vec(TAG_EMOTION[tg] ?? {});
-        for (let i = 0; i < moodVec.length; i++) moodVec[i] = Math.max(moodVec[i], v[i]);
-      }
-    } else {
-      moodVec = reading.target.slice();
-    }
-    const nuance = tagTrack({ title: e.t.title, artist: e.t.artist, genres: Array.from(e.tags) }).emotion;
-    const emotion = clampVec(lerp(moodVec, nuance, 0.3));
-    const vector = toVec(emotion);
+    const vector = toVec(it.emotion);
     const b = eParams.length;
-    eParams.push(id, vector, JSON.stringify({ moods: Array.from(e.tags) }), "lastfm+lexicon-v1");
+    eParams.push(id, vector, JSON.stringify({ moods: it.genres }), "lastfm+lexicon-v1");
     eTuples.push(`($${b + 1}, $${b + 2}::vector, $${b + 3}::jsonb, $${b + 4})`);
     rows.push({
       id,
-      title: e.t.title,
-      artist: e.t.artist,
-      genres: Array.from(e.tags),
+      title: it.title,
+      artist: it.artist,
+      genres: it.genres,
       year: null,
       source: "lastfm",
       emotion: vector,
@@ -210,27 +149,118 @@ export async function discover(
       eParams
     );
   }
+  return rows;
+}
 
-  // 4. Rank with the shared taste-aware engine. With multiple languages active,
-  //    balance the queue round-robin across them so one can't crowd the others
-  //    out (precise-mood English would otherwise dominate a vibe-seeded pool).
+/** Returns a ranked queue sourced live from Last.fm, or null to fall back. */
+export async function discover(
+  userId: string,
+  reading: MomentReading,
+  limit = 12,
+  languages: string[] = [],
+  artist?: string
+): Promise<QueueTrack[] | null> {
+  if (!lastfmConfigured()) return null;
+
+  const sig = reading.signals as Record<string, string | null | undefined>;
+  const sit = sig?.situation ? SITUATION_TAG[String(sig.situation).toLowerCase()] : undefined;
+  const moodTags: string[] = [];
+  if (sit) moodTags.push(sit);
+  for (const d of topDims(reading.target, 3)) {
+    if (d.value > 0.45 && DIM_TAG[d.name]) moodTags.push(DIM_TAG[d.name] as string);
+  }
+  const uniqueMoodTags = Array.from(new Set(moodTags)).slice(0, 4);
+  const moodTagSet = new Set(uniqueMoodTags);
+
+  const langs = languages.length ? languages.map((l) => l.toLowerCase()) : ["english"];
+  const includeGlobal = langs.includes("english");
+  const langTags = Array.from(new Set(langs.flatMap((l) => LANGUAGE_TAGS[l] ?? [])));
+  const finalTags = Array.from(
+    new Set([...(includeGlobal ? uniqueMoodTags : []), ...langTags])
+  ).slice(0, 6);
+
+  // 1. Pull mood/language tracks and (optionally) the featured artist concurrently.
+  const [lists, artistTracks] = await Promise.all([
+    finalTags.length ? Promise.all(finalTags.map((t) => topTracksByTag(t, 30))) : Promise.resolve<LastfmTrack[][]>([]),
+    artist && artist.trim() ? topTracksByArtist(artist.trim(), 12) : Promise.resolve<LastfmTrack[]>([]),
+  ]);
+
+  // 2. Dedupe tag tracks, collecting every mood tag each one matched.
+  const byKey = new Map<string, { t: LastfmTrack; tags: Set<string> }>();
+  for (const list of lists) {
+    for (const t of list) {
+      const k = `${t.title.toLowerCase()}|${t.artist.toLowerCase()}`;
+      const e = byKey.get(k);
+      if (e) e.tags.add(t.tag);
+      else byKey.set(k, { t, tags: new Set([t.tag]) });
+    }
+  }
+  const entries = Array.from(byKey.values());
+  if (entries.length < 5 && artistTracks.length === 0) return null;
+
+  // 3. Emotion: union of matched moods (full strength); language-pool tracks
+  //    (no mood tag) seeded to the moment's own target so they fit the vibe.
+  const moodItems: Item[] = entries.map((e) => {
+    const moodMatches = Array.from(e.tags).filter((tg) => moodTagSet.has(tg));
+    let moodVec: number[];
+    if (moodMatches.length) {
+      moodVec = new Array(EMOTION_DIMS.length).fill(0);
+      for (const tg of moodMatches) {
+        const v = vec(TAG_EMOTION[tg] ?? {});
+        for (let i = 0; i < moodVec.length; i++) moodVec[i] = Math.max(moodVec[i], v[i]);
+      }
+    } else {
+      moodVec = reading.target.slice();
+    }
+    const nuance = tagTrack({ title: e.t.title, artist: e.t.artist, genres: Array.from(e.tags) }).emotion;
+    return { title: e.t.title, artist: e.t.artist, genres: Array.from(e.tags), emotion: clampVec(lerp(moodVec, nuance, 0.3)) };
+  });
+  const rows = await persistTracks(moodItems);
+
+  // 4. Rank, then balance round-robin across multiple active languages.
   const ranked = await rankCandidates(userId, reading, rows, Math.max(limit, rows.length));
   const activeLangs = includeGlobal ? langs : langs.filter((l) => (LANGUAGE_TAGS[l] ?? []).length);
-  if (activeLangs.length <= 1) return ranked.slice(0, limit);
+  let base: QueueTrack[];
+  if (activeLangs.length <= 1) {
+    base = ranked.slice(0, limit);
+  } else {
+    const langTagSet = new Set(langTags);
+    const langOf = (t: QueueTrack) => t.genres.find((g) => langTagSet.has(g)) ?? "english";
+    const buckets = new Map<string, QueueTrack[]>();
+    for (const t of ranked) {
+      const k = langOf(t);
+      if (!buckets.has(k)) buckets.set(k, []);
+      buckets.get(k)!.push(t);
+    }
+    const order = Array.from(buckets.keys());
+    base = [];
+    for (let i = 0; base.length < limit && order.some((k) => buckets.get(k)!.length); i++) {
+      const b = buckets.get(order[i % order.length])!;
+      if (b.length) base.push(b.shift()!);
+    }
+  }
 
-  const langTagSet = new Set(langTags);
-  const langOf = (t: QueueTrack) => t.genres.find((g) => langTagSet.has(g)) ?? "english";
-  const buckets = new Map<string, QueueTrack[]>();
-  for (const t of ranked) {
-    const k = langOf(t);
-    if (!buckets.has(k)) buckets.set(k, []);
-    buckets.get(k)!.push(t);
+  // 5. Featured artist: lead with 1–2 of their tracks (mood-ranked), rest = others.
+  if (artistTracks.length) {
+    const seen = new Set<string>();
+    const aItems: Item[] = [];
+    for (const t of artistTracks) {
+      const k = `${t.title.toLowerCase()}|${t.artist.toLowerCase()}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const nuance = tagTrack({ title: t.title, artist: t.artist, genres: [] }).emotion;
+      aItems.push({ title: t.title, artist: t.artist, genres: [], emotion: clampVec(lerp(reading.target.slice(), nuance, 0.25)) });
+    }
+    const artistRows = await persistTracks(aItems);
+    const pinned = (await rankCandidates(userId, reading, artistRows, 4)).slice(0, 2);
+    if (pinned.length) {
+      const ids = new Set(pinned.map((t) => t.id));
+      const out = base.filter((t) => !ids.has(t.id));
+      out.splice(0, 0, pinned[0]);
+      if (pinned[1]) out.splice(Math.min(3, out.length), 0, pinned[1]);
+      base = out.slice(0, limit);
+    }
   }
-  const order = Array.from(buckets.keys());
-  const out: QueueTrack[] = [];
-  for (let i = 0; out.length < limit && order.some((k) => buckets.get(k)!.length); i++) {
-    const b = buckets.get(order[i % order.length])!;
-    if (b.length) out.push(b.shift()!);
-  }
-  return out;
+
+  return base.length ? base : null;
 }
